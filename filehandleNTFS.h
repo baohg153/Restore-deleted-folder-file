@@ -1,18 +1,18 @@
-#include <iostream>
-#include <windows.h>
-#include <winioctl.h>
-#include <vector>
-#include <tuple>
-#include <cstring> // memcpy
-#include <cstdint>
-#include <fstream>
-#include <algorithm>
+// #include <iostream>
+// #include <windows.h>
+// #include <winioctl.h>
+// #include <vector>
+// #include <tuple>
+// #include <cstring> // memcpy
+// #include <cstdint>
+// #include <fstream>
+// #include <algorithm>
 
 using namespace std;
 
-typedef tuple<string, bool, int, int, bool, bool, int> ITEM; 
+typedef tuple<string, bool, int, int, bool, bool, int> ITEM_NTFS; 
 // {name, isFolder, size, startCluster, isDeleted, isHidden}  
-const int BUFFER_SIZE = 4096;
+const int BUFFER_SIZE_FAT = 4096;
 const int SECTOR_SIZE = 512;             // Kích thước 1 sector (thường 512 bytes)
 const int MFT_RECORD_SIZE = 1024;          // Giả sử 1 MFT entry = 1024 bytes (2 sectors)
 const int CLUSTER_SIZE = 4096;             // Giả định cluster size = 4096 bytes
@@ -41,7 +41,7 @@ bool unlockVolume(HANDLE hVolume)
 }
 
 bool readSectorNTFS(HANDLE hVolume, unsigned char buffer[], uint64_t sector) {
-    if (SECTOR_SIZE > BUFFER_SIZE) {
+    if (SECTOR_SIZE > BUFFER_SIZE_FAT) {
         cerr << "Error: BUFFER_SIZE quá nhỏ!" << endl;
         return false;
     }
@@ -105,7 +105,7 @@ bool writeSector(HANDLE hVolume, unsigned char buffer[], int sector)
     }
 
     DWORD bytesWritten;
-    if (!WriteFile(hVolume, buffer, BUFFER_SIZE, &bytesWritten, NULL) || bytesWritten != BUFFER_SIZE) 
+    if (!WriteFile(hVolume, buffer, BUFFER_SIZE_FAT, &bytesWritten, NULL) || bytesWritten != BUFFER_SIZE_FAT) 
     {
         DWORD error = GetLastError();
         std::cerr << "Writing sector error: " << error << std::endl;
@@ -154,7 +154,7 @@ struct NonResidentAttrHeader {
 #pragma pack(pop)
 
 
-ITEM parseMFTEntry(const unsigned char* buffer, int MFTstart) {
+ITEM_NTFS parseMFTEntry(const unsigned char* buffer, int MFTstart) {
     // Lấy offset danh sách thuộc tính từ header (2 byte tại offset 0x14)
     uint16_t attrOffset = *(uint16_t*)(buffer + 0x14);
     // Lấy kích thước của entry (4 byte tại offset 0x1C)
@@ -325,10 +325,6 @@ vector<pair<int,int>> parseDataRuns(const unsigned char* dataRun, int maxLen) {
 
     return runs;
 }
-
-
-
-
 
 bool recoverFileFromMFTA(HANDLE hVol, int mftEntrySector, const string& outputFile) {
     unsigned char mftBuffer[MFT_RECORD_SIZE] = {0};

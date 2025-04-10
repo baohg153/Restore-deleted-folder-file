@@ -40,7 +40,7 @@ int main()
     lockVolume(hVolume);
 
     //Read boot sector
-    unsigned char VolumeSector[BUFFER_SIZE];
+    unsigned char VolumeSector[BUFFER_SIZE_FAT];
     readSectorNTFS(hVolume, VolumeSector, 0);
     sS = getIntValue(VolumeSector, 0xB, 2); // Kích thước của một sector
 
@@ -63,7 +63,7 @@ int main()
     cout << sS << " " << sC << " " << sV << " " << MFTstart << " " << MFTRecordSize << " " << MFTMirrorStart << endl;
     
     unsigned char MFTEntryBuffer[MFTRecordSize];
-    vector<ITEM> item;
+    vector<ITEM_NTFS> item;
     int tracker = MFTstart - MFTMirrorStart;
     int step = 0;
     int count = 0; //Count to stop
@@ -76,7 +76,7 @@ int main()
     //         count = 0;
     //     if(count > 5)
     //         break;
-    //     ITEM result = parseMFTEntry(MFTEntryBuffer, MFTstart + step);
+    //     ITEM_NTFS result = parseMFTEntry(MFTEntryBuffer, MFTstart + step);
     //     if(get<5>(result) == 0 & get<0>(result) != "Unknown" & get<4>(result)){
     //         item.push_back(result);
     //     }

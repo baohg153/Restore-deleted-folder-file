@@ -5,7 +5,7 @@
 using namespace std;
 
 int sS, sC, sB, nF, sF, sD;
-extern int BUFFER_SIZE;
+extern int BUFFER_SIZE_FAT;
 
 int getIntValue(unsigned char buffer[], int start, int size)
 {
@@ -160,14 +160,14 @@ int main()
     // lockVolume(hVolume);
     //Check if FAT32
     bool isFAT = 1;
-    unsigned char bootSector[BUFFER_SIZE];
+    unsigned char bootSector[BUFFER_SIZE_FAT];
     readSector(hVolume, bootSector, 0);
     string check_str = "FAT32";
     for (int i = 0; i < 5; i++)
         if (bootSector[0x52 + i] != check_str[i]){ isFAT = 0; break;}
 
     //Read boot sector
-    // unsigned char bootSector[BUFFER_SIZE];
+    // unsigned char bootSector[BUFFER_SIZE_FAT];
     // readSector(hVolume, bootSector, 0);
     sS = getIntValue(bootSector, 0xB, 2);
     sC = getIntValue(bootSector, 0xD, 1);
@@ -176,7 +176,7 @@ int main()
     sF = getIntValue(bootSector, 0x24, 4);
     int firstDataSector = sB + nF * sF;
     std::cout << sS << ", " << sB << ", " << nF << ", " << sF << ": " << firstDataSector << "\n\n";
-    BUFFER_SIZE = sS;
+    BUFFER_SIZE_FAT = sS;
 
     //Print folders and deleted files in certain folder
     vector<ITEM> folders, deletedFiles;
