@@ -6,14 +6,14 @@
 
 using namespace std;
 
-typedef tuple<string, bool, int, int, bool> ITEM; //{name, isFolder, size, startCluster, isDeleted}  
-#define BUFFER_SIZE 512
+typedef tuple<pair<int, int>, string, bool, int, int, bool> ITEM; //{{sector, index}, name, isFolder, size, startCluster, isDeleted}  
+int BUFFER_SIZE = 512;
 
 bool lockVolume(HANDLE hVolume)
 {
     DWORD bytesReturned;
-    return DeviceIoControl(hVolume, FSCTL_LOCK_VOLUME, NULL, 0, NULL, 0, &bytesReturned, NULL);
-}
+        return DeviceIoControl(hVolume, FSCTL_LOCK_VOLUME, NULL, 0, NULL, 0, &bytesReturned, NULL);
+    }
 
 bool unlockVolume(HANDLE hVolume)
 {
@@ -29,7 +29,7 @@ bool readSector(HANDLE hVolume, unsigned char buffer[], int sector)
         DWORD error = GetLastError();
         std::cerr << "Seeking error: " << error << std::endl;
         CloseHandle(hVolume);
-        return 1;
+        return 0;
     }
 
     DWORD bytesRead;
@@ -45,13 +45,17 @@ bool readSector(HANDLE hVolume, unsigned char buffer[], int sector)
 
 bool writeSector(HANDLE hVolume, unsigned char buffer[], int sector)
 {
+    lockVolume(hVolume);
+
     LARGE_INTEGER li;
     li.QuadPart = 0x200 * sector; 
     if (!SetFilePointerEx(hVolume, li, NULL, FILE_BEGIN)) {
         DWORD error = GetLastError();
         std::cerr << "Seeking error: " << error << std::endl;
         CloseHandle(hVolume);
-        return 1;
+
+        unlockVolume(hVolume);
+        return 0;
     }
 
     DWORD bytesWritten;
@@ -60,31 +64,55 @@ bool writeSector(HANDLE hVolume, unsigned char buffer[], int sector)
         DWORD error = GetLastError();
         std::cerr << "Writing sector error: " << error << std::endl;
         CloseHandle(hVolume);
-        return false;
+
+        unlockVolume(hVolume);
+        return 0;
     }
+
+    unlockVolume(hVolume);
 
     return 1;
 }
 
-// void readEntry(unsigned char buffer[], int line, std::string &name, int &size, int &start_cluster)
-// {
-
-// }
-
-int readEntry(unsigned char buffer[], int line, ITEM &item)
+int readEntry(HANDLE hVolume, unsigned char sector[], int recentSector, int line, ITEM &item)
 {
     int offset = line * 32; // Mỗi entry trong FAT32 có kích thước 32 byte
     std::string fullName;
     int entryIndex = line;
+
+    unsigned char buffer[BUFFER_SIZE];
+    for (int i = 0; i < BUFFER_SIZE; i++)
+        buffer[i] = sector[i];
 
     if (buffer[offset + 0xB] == 0x0F)
         return 1;
     if (buffer[offset] == 0 and buffer[offset + 0x10] == 0)
         return -1;
 
-    // Đọc entry phụ (Long File Name - LFN)
-    while (entryIndex > 0)
+    // Đọc cluster bắt đầu (2 byte ở offset 20 + 2 byte ở offset 26)
+    int start_cluster = (buffer[offset + 26] | (buffer[offset + 27] << 8)) |
+                        ((buffer[offset + 20] | (buffer[offset + 21] << 8)) << 16);
+
+    // Đọc kích thước file (4 byte cuối)
+    int size = buffer[offset + 28] | (buffer[offset + 29] << 8) |
+               (buffer[offset + 30] << 16) | (buffer[offset + 31] << 24);
+    
+    // Folder or File?
+    bool isFolder = (buffer[offset + 0xB] & (1 << 4));
+    
+    // Is Deleted?
+    bool isDeleted = (buffer[offset] == 0xE5);
+
+    //Đọc entry phụ (Long File Name - LFN)
+    while (entryIndex >= 0)
     {
+        if (entryIndex <= 0 && recentSector > 0)
+        {
+            recentSector--;  // Di chuyển về sector trước
+            readSector(hVolume, buffer, recentSector); // Đọc lại sector trước
+            entryIndex = 16; // FAT32 có tối đa 16 entry trên 1 sector, bắt đầu từ cuối
+        }
+
         int lfnOffset = (entryIndex - 1) * 32;
         if (buffer[lfnOffset + 11] != 0x0F) // Nếu không phải entry phụ thì dừng
             break;
@@ -104,22 +132,22 @@ int readEntry(unsigned char buffer[], int line, ITEM &item)
     shortName = shortName.substr(0, shortName.find_last_not_of(' ') + 1);
 
     if (fullName.empty()) // Nếu không có LFN, dùng short name
-        fullName = shortName;
+    {
+        //fullName = shortName; --> X
+        // Lấy phần tên (8 ký tự đầu)
+        std::string name(reinterpret_cast<char*>(buffer + offset), 8);
+        name = name.substr(0, name.find_last_not_of(' ') + 1);
 
-    // Đọc cluster bắt đầu (2 byte ở offset 20 + 2 byte ở offset 26)
-    int start_cluster = (buffer[offset + 26] | (buffer[offset + 27] << 8)) |
-                        ((buffer[offset + 20] | (buffer[offset + 21] << 8)) << 16);
+        // Lấy phần mở rộng (3 ký tự tiếp theo)
+        std::string ext(reinterpret_cast<char*>(buffer + offset + 8), 3);
+        ext = ext.substr(0, ext.find_last_not_of(' ') + 1);
 
-    // Đọc kích thước file (4 byte cuối)
-    int size = buffer[offset + 28] | (buffer[offset + 29] << 8) |
-               (buffer[offset + 30] << 16) | (buffer[offset + 31] << 24);
+        // Nối thành "name.ext" nếu có phần mở rộng
+        fullName = ext.empty() ? name : (name + "." + ext);
+    }
+
     
-    // Folder or File?
-    bool isFolder = (buffer[offset + 0xB] & (1 << 4));
-    
-    // Is Deleted?
-    bool isDeleted = (buffer[offset] == 0xE5);
 
-    item = {fullName, isFolder, size, start_cluster, isDeleted};
+    item = {{0, 0}, fullName, isFolder, size, start_cluster, isDeleted};
     return 0;
 }
