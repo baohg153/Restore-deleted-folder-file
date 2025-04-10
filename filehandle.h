@@ -14,12 +14,14 @@ bool lockVolume(HANDLE hVolume);
 bool unlockVolume(HANDLE hVolume);
 bool readSector(HANDLE hVolume, unsigned char buffer[], int sector);
 bool writeSector(HANDLE hVolume, unsigned char buffer[], int sector);
+int getIntValue(unsigned char buffer[], int start, int size);
 
 //FOR FAT32
 typedef tuple<pair<int, int>, string, bool, int, int, bool> ITEM; //{{sector, index}, name, isFolder, size, startCluster, isDeleted}  
-int BUFFER_SIZE_FAT = 512;
 
 int readEntry(HANDLE hVolume, unsigned char sector[], int recentSector, int line, ITEM &item);
+int restoreItem(HANDLE hVolume, ITEM item);
+void getCertainFolder(HANDLE hVolume, int recentSector, vector<ITEM> &folders, vector<ITEM> &deletedFiles);
 
 //FOR NTFS
 typedef tuple<string, bool, int, int, bool, bool, int> ITEM_NTFS; 
@@ -62,6 +64,5 @@ struct NonResidentAttrHeader {
 bool isMFTEntry(const unsigned char* buffer);
 bool readSectorNTFS(HANDLE hVolume, unsigned char buffer[], uint64_t sector);
 ITEM_NTFS parseMFTEntry(const unsigned char* buffer, int MFTstart);
-void recoverInUseFlag(unsigned char* mftBuffer);
 vector<pair<int,int>> parseDataRuns(const unsigned char* dataRun, int maxLen);
 bool recoverFileFromMFTA(HANDLE hVol, int mftEntrySector, const string& outputFile);

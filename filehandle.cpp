@@ -1,18 +1,285 @@
-// #include <iostream>
-// #include <windows.h>
-// #include <winioctl.h>
-// #include <vector>
-// #include <tuple>
-// #include <cstring> // memcpy
-// #include <cstdint>
-// #include <fstream>
-// #include <algorithm>
+#include "filehandle.h"
 
-using namespace std;
+int sS = 512, sC, sB, nF, sF, sD;
 
-typedef tuple<string, bool, int, int, bool, bool, int> ITEM_NTFS; 
-// {name, isFolder, size, startCluster, isDeleted, isHidden}  
-const int BUFFER_SIZE_FAT = 4096;
+bool lockVolume(HANDLE hVolume)
+{
+    DWORD bytesReturned;
+        return DeviceIoControl(hVolume, FSCTL_LOCK_VOLUME, NULL, 0, NULL, 0, &bytesReturned, NULL);
+    }
+
+bool unlockVolume(HANDLE hVolume)
+{
+    DWORD bytesReturned;
+    return DeviceIoControl(hVolume, FSCTL_UNLOCK_VOLUME, NULL, 0, NULL, 0, &bytesReturned, NULL);
+}
+
+bool readSector(HANDLE hVolume, unsigned char buffer[], int sector)
+{
+    LARGE_INTEGER li;
+    li.QuadPart = 0x200 * sector; 
+    if (!SetFilePointerEx(hVolume, li, NULL, FILE_BEGIN)) {
+        DWORD error = GetLastError();
+        std::cerr << "Seeking error: " << error << std::endl;
+        CloseHandle(hVolume);
+        return 0;
+    }
+
+    DWORD bytesRead;
+    if (!ReadFile(hVolume, buffer, sS, &bytesRead, NULL) || bytesRead == 0) {
+        DWORD error = GetLastError();
+        std::cerr << "Reading sector error: " << error << std::endl;
+        CloseHandle(hVolume);
+        return 0;
+    }
+
+    return 1;
+}
+
+
+int getIntValue(unsigned char buffer[], int start, int size)
+{
+    int result = 0, coef = 1;
+    for (int i = start; i <= start + size - 1; i++)
+    {
+        result += buffer[i] * coef;
+        coef *= 256;
+    }        
+    return result;
+}
+
+//FOR FAT32---------------------------------------------------------------
+bool writeSector(HANDLE hVolume, unsigned char buffer[], int sector)
+{
+    lockVolume(hVolume);
+
+    LARGE_INTEGER li;
+    li.QuadPart = 0x200 * sector; 
+    if (!SetFilePointerEx(hVolume, li, NULL, FILE_BEGIN)) {
+        DWORD error = GetLastError();
+        std::cerr << "Seeking error: " << error << std::endl;
+        CloseHandle(hVolume);
+
+        unlockVolume(hVolume);
+        return 0;
+    }
+
+    DWORD bytesWritten;
+    if (!WriteFile(hVolume, buffer, sS, &bytesWritten, NULL) || bytesWritten != sS) 
+    {
+        DWORD error = GetLastError();
+        std::cerr << "Writing sector error: " << error << std::endl;
+        CloseHandle(hVolume);
+
+        unlockVolume(hVolume);
+        return 0;
+    }
+
+    unlockVolume(hVolume);
+
+    return 1;
+}
+
+void getCertainFolder(HANDLE hVolume, int recentSector, vector<ITEM> &folders, vector<ITEM> &deletedFiles)
+{
+    folders.clear(); deletedFiles.clear();
+    unsigned char sector[sS];
+    readSector(hVolume, sector, recentSector);
+    int entryIndex = 1;
+    while (1)
+    {
+        if (entryIndex >= 16)
+        {
+            readSector(hVolume, sector, ++recentSector);
+            entryIndex = 0;
+        }
+
+        ITEM newItem;
+        int retval = readEntry(hVolume, sector, recentSector, entryIndex++, newItem);
+        if (retval == 1)
+            continue;
+        if (retval == -1) 
+            break;
+        get<0>(newItem) = {recentSector, entryIndex - 1};
+        
+        if (get<2>(newItem)) folders.push_back(newItem);
+        else if (get<5>(newItem)) deletedFiles.push_back(newItem);
+    }
+}
+
+
+int readEntry(HANDLE hVolume, unsigned char sector[], int recentSector, int line, ITEM &item)
+{
+    int offset = line * 32; // Mỗi entry trong FAT32 có kích thước 32 byte
+    std::string fullName;
+    int entryIndex = line;
+
+    unsigned char buffer[sS];
+    for (int i = 0; i < sS; i++)
+        buffer[i] = sector[i];
+
+    if (buffer[offset + 0xB] == 0x0F)
+        return 1;
+    if (buffer[offset] == 0 and buffer[offset + 0x10] == 0)
+        return -1;
+
+    // Đọc cluster bắt đầu (2 byte ở offset 20 + 2 byte ở offset 26)
+    int start_cluster = (buffer[offset + 26] | (buffer[offset + 27] << 8)) |
+                        ((buffer[offset + 20] | (buffer[offset + 21] << 8)) << 16);
+
+    // Đọc kích thước file (4 byte cuối)
+    int size = buffer[offset + 28] | (buffer[offset + 29] << 8) |
+               (buffer[offset + 30] << 16) | (buffer[offset + 31] << 24);
+    
+    // Folder or File?
+    bool isFolder = (buffer[offset + 0xB] & (1 << 4));
+    
+    // Is Deleted?
+    bool isDeleted = (buffer[offset] == 0xE5);
+
+    //Đọc entry phụ (Long File Name - LFN)
+    while (entryIndex >= 0)
+    {
+        if (entryIndex <= 0 && recentSector > 0)
+        {
+            recentSector--;  // Di chuyển về sector trước
+            readSector(hVolume, buffer, recentSector); // Đọc lại sector trước
+            entryIndex = 16; // FAT32 có tối đa 16 entry trên 1 sector, bắt đầu từ cuối
+        }
+
+        int lfnOffset = (entryIndex - 1) * 32;
+        if (buffer[lfnOffset + 11] != 0x0F) // Nếu không phải entry phụ thì dừng
+            break;
+
+        // Đọc 13 ký tự Unicode từ entry phụ
+        for (int i : {1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30})
+        {
+            if (buffer[lfnOffset + i] == 0xFF || buffer[lfnOffset + i] == 0x00) // Kết thúc chuỗi
+                break;
+            fullName += (char)buffer[lfnOffset + i];
+        }
+        entryIndex--;
+    }
+
+    // Đọc entry chính
+    std::string shortName(reinterpret_cast<char*>(buffer + offset), 11);
+    shortName = shortName.substr(0, shortName.find_last_not_of(' ') + 1);
+
+    if (fullName.empty()) // Nếu không có LFN, dùng short name
+    {
+        //fullName = shortName; --> X
+        // Lấy phần tên (8 ký tự đầu)
+        std::string name(reinterpret_cast<char*>(buffer + offset), 8);
+        name = name.substr(0, name.find_last_not_of(' ') + 1);
+
+        // Lấy phần mở rộng (3 ký tự tiếp theo)
+        std::string ext(reinterpret_cast<char*>(buffer + offset + 8), 3);
+        ext = ext.substr(0, ext.find_last_not_of(' ') + 1);
+
+        // Nối thành "name.ext" nếu có phần mở rộng
+        fullName = ext.empty() ? name : (name + "." + ext);
+    }
+
+    
+
+    item = {{0, 0}, fullName, isFolder, size, start_cluster, isDeleted};
+    return 0;
+}
+
+int restoreItem(HANDLE hVolume, ITEM item)
+{
+    int sectorIndex = get<0>(item).first, offset = get<0>(item).second * 32;
+    int cluster = get<4>(item), size = get<3>(item);
+
+    //Read sector
+    unsigned char sector[sS];
+    readSector(hVolume, sector, sectorIndex);
+
+    //Change byte E5
+    sector[offset] = 'A';
+    int loffset = offset - 32, count = 0;
+    while (loffset >= 0 && sector[loffset + 0xB] == 0x0F)
+    {
+       sector[loffset] = ++count;
+       loffset -= 32;
+    }
+    
+    int exCount = -1; unsigned char exSector[sS];
+    if (loffset < 0)
+    {
+        exCount = 0;
+        readSector(hVolume, exSector, sectorIndex - 1);
+        loffset = sS - 32;
+        while (exSector[loffset + 0xB] == 0x0F)
+        {
+            exSector[loffset] = ++count;
+            ++exCount;
+            loffset -= 32;
+        }
+    }
+
+    if (exCount > 0)
+    {   
+        char ch;
+        if (offset > 0) ch = sector[offset - 31];
+        else ch = exSector[sS - 31];
+
+        sector[offset] = ch - 0x20 * (ch >= 91 && ch <= 116);
+        exSector[loffset + 32] += 0x40;
+    }
+    else if (count)
+    {
+        if (exCount == 0) loffset = -32; 
+        char ch = sector[offset - 31];
+        sector[offset] = ch - 0x20 * (ch >= 91 && ch <= 116);
+        sector[loffset + 32] += 0x40;
+    }
+    writeSector(hVolume, sector, sectorIndex);
+    if (exCount > 0) writeSector(hVolume, exSector, sectorIndex - 1);
+
+    //Restore cluster
+    unsigned char FAT[sS];
+    int fatSector = sB + cluster / 128;
+    readSector(hVolume, FAT, fatSector);
+    int nCluster = (size - 1)/(sC * sS) + 1, retval = 0, restoredCluster = 0;
+    for (int i = 0; i < nCluster; i++)
+    {
+        int curCluster = cluster + i;
+        int offset = 4 * (curCluster % 128);
+        if (getIntValue(FAT, offset, 4) == 0)
+        {
+            restoredCluster++;
+            int fatValue = (i == nCluster - 1) ? 0x0FFFFFFF : curCluster + 1;
+            FAT[offset] = fatValue & 0xFF;        
+            FAT[offset + 1] = (fatValue >> 8) & 0xFF;
+            FAT[offset + 2] = (fatValue>> 16) & 0xFF;
+            FAT[offset + 3] = (fatValue >> 24) & 0xFF; 
+
+            //What if clusters are in two different sectors?
+            if ((curCluster + 1) % 128 == 0)
+            {
+                writeSector(hVolume, FAT, fatSector);
+                writeSector(hVolume, FAT, fatSector + sF);
+                readSector(hVolume, FAT, ++fatSector);
+            }
+        }
+        else
+        {
+            retval = -1;
+            break;
+        }
+    }
+
+    writeSector(hVolume, FAT, fatSector);
+    writeSector(hVolume, FAT, fatSector + sF);
+
+    // resetVolume(hVolume, "\\\\.\\F:");
+
+    return retval;
+}
+
+//NTFS--------------------------------------------------------------
+int BUFFER_SIZE = 4096;
 const int SECTOR_SIZE = 512;             // Kích thước 1 sector (thường 512 bytes)
 const int MFT_RECORD_SIZE = 1024;          // Giả sử 1 MFT entry = 1024 bytes (2 sectors)
 const int CLUSTER_SIZE = 4096;             // Giả định cluster size = 4096 bytes
@@ -26,22 +293,8 @@ bool isMFTEntry(const unsigned char* buffer) {
     return signature == MFT_SIGNATURE;
 }
 
-
-
-bool lockVolume(HANDLE hVolume)
-{
-    DWORD bytesReturned;
-    return DeviceIoControl(hVolume, FSCTL_LOCK_VOLUME, NULL, 0, NULL, 0, &bytesReturned, NULL);
-}
-
-bool unlockVolume(HANDLE hVolume)
-{
-    DWORD bytesReturned;
-    return DeviceIoControl(hVolume, FSCTL_UNLOCK_VOLUME, NULL, 0, NULL, 0, &bytesReturned, NULL);
-}
-
 bool readSectorNTFS(HANDLE hVolume, unsigned char buffer[], uint64_t sector) {
-    if (SECTOR_SIZE > BUFFER_SIZE_FAT) {
+    if (SECTOR_SIZE > BUFFER_SIZE) {
         cerr << "Error: BUFFER_SIZE quá nhỏ!" << endl;
         return false;
     }
@@ -65,94 +318,6 @@ bool readSectorNTFS(HANDLE hVolume, unsigned char buffer[], uint64_t sector) {
 
     return true;
 }
-
-
-// bool readSectorNTFS(HANDLE hVolume, unsigned char buffer[], int sector)
-// {
-//     if (BUFFER_SIZE < SECTOR_SIZE) {
-//         cerr << "Error: BUFFER_SIZE quá nhỏ!" << endl;
-//         return 0;
-//     }
-//     LARGE_INTEGER li;
-//     li.QuadPart = (int64_t)sector * 0x200;  // Dùng int64_t để tránh tràn số
-//     if (!SetFilePointerEx(hVolume, li, NULL, FILE_BEGIN)) {
-//         DWORD error = GetLastError();
-//         std::cerr << "Seeking error: " << error << std::endl;
-//         CloseHandle(hVolume);
-//         return false;
-//     }
-
-//     DWORD bytesRead;
-//     if (!ReadFile(hVolume, buffer, BUFFER_SIZE, &bytesRead, NULL) || bytesRead == 0) {
-//         DWORD error = GetLastError();
-//         std::cerr << "Reading sector error: " << error << std::endl;
-//         CloseHandle(hVolume);
-//         return false;
-//     }
-
-//     return true;
-// }
-
-bool writeSector(HANDLE hVolume, unsigned char buffer[], int sector)
-{
-    LARGE_INTEGER li;
-    li.QuadPart = 0x200 * sector; 
-    if (!SetFilePointerEx(hVolume, li, NULL, FILE_BEGIN)) {
-        DWORD error = GetLastError();
-        std::cerr << "Seeking error: " << error << std::endl;
-        CloseHandle(hVolume);
-        return 1;
-    }
-
-    DWORD bytesWritten;
-    if (!WriteFile(hVolume, buffer, BUFFER_SIZE_FAT, &bytesWritten, NULL) || bytesWritten != BUFFER_SIZE_FAT) 
-    {
-        DWORD error = GetLastError();
-        std::cerr << "Writing sector error: " << error << std::endl;
-        CloseHandle(hVolume);
-        return false;
-    }
-
-    return 1;
-}
-
-
-
-#pragma pack(push, 1)
-struct ResidentAttrHeader {
-    uint32_t type;           // Loại thuộc tính
-    uint32_t length;         // Độ dài toàn bộ thuộc tính (header + value)
-    uint8_t  nonResident;    // 0 nếu resident, 1 nếu non-resident
-    uint8_t  nameLength;     // Độ dài tên của attribute (nếu có), tính theo ký tự
-    uint16_t nameOffset;     // Offset đến tên của attribute (nếu có)
-    uint16_t flags;          // Flags của attribute
-    uint16_t attributeNumber;// Số thứ tự của attribute
-    // Resident Attribute Header cụ thể:
-    uint32_t valueLength;    // Độ dài phần value (nội dung)
-    uint16_t valueOffset;    // Offset từ đầu attribute đến phần value
-    uint8_t  indexedFlag;    // Chỉ số (nếu có)
-    uint8_t  padding;        // Padding
-};
-
-struct NonResidentAttrHeader {
-    uint32_t type;
-    uint16_t length;
-    uint8_t  nonResident;
-    uint8_t  nameLength;
-    uint16_t nameOffset;
-    uint16_t flags;
-    uint16_t attributeNumber;
-    uint64_t startVCN;
-    uint64_t endVCN;
-    uint16_t dataRunOffset;
-    uint16_t compressionUnit;
-    uint32_t padding;
-    uint64_t allocatedSize;
-    uint64_t realSize;
-    uint64_t initializedSize;
-};
-#pragma pack(pop)
-
 
 ITEM_NTFS parseMFTEntry(const unsigned char* buffer, int MFTstart) {
     // Lấy offset danh sách thuộc tính từ header (2 byte tại offset 0x14)
@@ -245,18 +410,6 @@ ITEM_NTFS parseMFTEntry(const unsigned char* buffer, int MFTstart) {
     }
 
     return make_tuple(fileName, isFolder, fileSize, startCluster, isDeleted, isHidden, MFTstart);
-}
-
-
-void recoverInUseFlag(unsigned char* mftBuffer) {
-    // Đọc giá trị hiện tại của flag (2 byte) từ offset 0x16
-    uint16_t flags = *(uint16_t*)(mftBuffer + 0x16);
-    
-    // Bật bit "in use" (bit 0, giá trị 0x0001)
-    flags |= 0x0001;
-    
-    // Ghi lại giá trị đã sửa vào buffer
-    memcpy(mftBuffer + 0x16, &flags, sizeof(flags));
 }
 
 vector<pair<int,int>> parseDataRuns(const unsigned char* dataRun, int maxLen) {
@@ -452,3 +605,4 @@ bool recoverFileFromMFTA(HANDLE hVol, int mftEntrySector, const string& outputFi
     cerr << "No valid $DATA attribute found." << endl;
     return false;
 }
+
