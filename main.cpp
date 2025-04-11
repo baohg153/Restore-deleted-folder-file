@@ -119,7 +119,7 @@ void doFAT(char volumeChar)
             CloseHandle(hVolume);
             Sleep(500);
             hVolume = CreateFileA(
-                "\\\\.\\F:",     
+                path,     
                 GENERIC_READ | GENERIC_WRITE , //| WRITE_DAC | WRITE_OWNER,   
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 
                 NULL, 
@@ -158,7 +158,7 @@ void doFAT(char volumeChar)
         else if (cmd == "restore")
         {
             cin >> num;
-            if (!num >= 0 && num <= deletedFiles.size() && !deletedFiles.empty()) continue;
+            if (!(num >= 0 && num <= deletedFiles.size() && !deletedFiles.empty())) continue;
 
             int retval = restoreItem(hVolume, deletedFiles[num]);
             if (retval == -1) cout << "Could not restore all data of the file!\n";
@@ -167,7 +167,7 @@ void doFAT(char volumeChar)
             CloseHandle(hVolume);
             Sleep(500);
             hVolume = CreateFileA(
-                "\\\\.\\F:",     
+                path,     
                 GENERIC_READ | GENERIC_WRITE , //| WRITE_DAC | WRITE_OWNER,   
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 
                 NULL, 
