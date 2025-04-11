@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <fstream>
 #include <algorithm>
+#include <cmath>
+#include <string.h>
 
 using namespace std;
 

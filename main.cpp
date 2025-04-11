@@ -26,10 +26,9 @@ bool isNTFSVolume(char driveLetter) {
     }
 
     return (std::string(fileSystemNameBuffer) == "NTFS");
-    
 }
 
-extern int sS, sC, sB, nF, sF, sD;
+extern int sS, sC, sB, nF, sF, sD, sV;
 bool isFAT32Volume(char driveLetter)
 {
     char path[7] = "\\\\.\\"; path[4] = driveLetter; path[5] = ':'; path[6] = '\0';
@@ -93,6 +92,8 @@ void doFAT(char volumeChar)
     vector<ITEM> folders, deletedFiles;
     int recentSector = firstDataSector;
     stack<int> prevSectors;
+
+
     string currentPath(1, volumeChar); currentPath = currentPath + ":/"; 
     while (1)
     {
@@ -181,7 +182,148 @@ void doFAT(char volumeChar)
 
     CloseHandle(hVolume);
     return;
-}    
+}
+
+extern int BUFFER_SIZE, SECTOR_SIZE, MFT_RECORD_SIZE, CLUSTER_SIZE;
+void doNTFS(char volumeChar){
+    char path[7] = "\\\\.\\"; path[4] = volumeChar; path[5] = ':'; path[6] = '\0';
+    //Create file 
+    HANDLE hVolume = CreateFileA(
+        path,     
+        GENERIC_READ | GENERIC_WRITE | WRITE_DAC | WRITE_OWNER,        
+        FILE_SHARE_READ | FILE_SHARE_WRITE, 
+        NULL, 
+        OPEN_EXISTING, 
+        0, 
+        NULL
+    );
+
+    if (hVolume == INVALID_HANDLE_VALUE) 
+    {
+        std::cerr << "Lỗi khi mở volume: " << GetLastError() << std::endl;
+        return;
+    }
+
+    lockVolume(hVolume);
+    unsigned char VolumeSector[BUFFER_SIZE];
+    readSectorNTFS(hVolume, VolumeSector, 0);
+    sS = getIntValue(VolumeSector, 0xB, 2); // Kích thước của một sector
+    sC = getIntValue(VolumeSector, 0xD, 1) ;// Kich thuoc cua mot cluster (tinh bang sector)
+    sV = getIntValue(VolumeSector, 0x28, 8) ;// So sector trong o dia
+    int MFTstart = getIntValue(VolumeSector, 0x30, 8) * sC; // Cluster bat dau cua MFT
+    int MFTMirrorStart = getIntValue(VolumeSector, 0x38, 8) * sC; // Cluster bat dau cua MFT Du phong
+
+    // Giá trị hex 0xF6
+    unsigned char hexValue = VolumeSector[0x40];
+    // Chuyển đổi sang số có dấu (sử dụng ép kiểu)
+    signed char signedValue = static_cast<signed char>(hexValue);
+    // Tính giá trị tuyệt đối của số có dấu
+    int absoluteValue = abs(signedValue);
+    int MFTRecordSize = pow(2, absoluteValue);     // Tính kích thước của bản ghi MFT
+
+    //BUFFER_SIZE = sS;
+    cout << sS << " " << sC << " " << sV << " " << MFTstart << " " << MFTRecordSize << " " << MFTMirrorStart << endl;
+    unsigned char MFTEntryBuffer[MFTRecordSize];
+    vector<ITEM_NTFS> item;
+
+    reset:
+    int tracker = MFTstart - MFTMirrorStart;
+    int step = 0;
+    int count = 0; //Count to stop
+    while(tracker){
+        readSectorNTFS(hVolume, MFTEntryBuffer, MFTstart + step);
+        if(!isMFTEntry(MFTEntryBuffer)){
+            count++;
+        }
+        else
+            count = 0;
+        if(count > 5)
+            break;
+        ITEM_NTFS result = parseMFTEntry(MFTEntryBuffer, MFTstart + step);
+        if(get<5>(result) == 0 & get<0>(result) != "Unknown" & get<4>(result)){
+            item.push_back(result);
+        }
+        step += 2;
+        tracker -= 2;
+    }
+
+    string currentPath(1, volumeChar); currentPath = currentPath + ":/"; 
+    while (1)
+    {
+        system("cls");
+        std::cout << "\033[1;34mPATH: \033[34m" << currentPath << "\033[0m\n-------------------------------------------------------\n";
+        //print deleted files
+        cout << "\n\033[1;33mDELETED FILES:\033[0m\n";
+        for (int i = 0; i < item.size(); i++)
+            cout << i << "> " << get<0>(item[i]) << " - Size: " << get<2>(item[i]) << "\n";
+        cout << "\n \033[0;32m Commands: \"restore [num]\" or \"quit\" or \"reset\" \n> \033[0m";
+
+        //Type in command
+        string cmd; int num;
+        cin >> cmd;
+        if (cmd == "quit") break;
+        else if (cmd == "reset")
+        {
+            cout << "Resetting...\n";
+            CloseHandle(hVolume);
+            Sleep(500);
+            hVolume = CreateFileA(
+                path,     
+                GENERIC_READ | GENERIC_WRITE , //| WRITE_DAC | WRITE_OWNER,   
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 
+                NULL, 
+                OPEN_EXISTING, 
+                FILE_FLAG_NO_BUFFERING, 
+                NULL
+            );
+            item.clear();
+            goto reset;
+        }
+
+        //Process command
+        if (cmd == "restore")
+        {
+            cin >> num;
+            // cout << "Where to save (C/D/E/...) - EXCEPT recovery drive: ";
+            // char drive;
+            // cin >> drive; 
+            string saveIn = "";
+            saveIn = string(1, volumeChar) + ":\\" + get<0>(item[num]);
+            size_t pos = saveIn.find('\0');
+            while (pos != std::string::npos) {
+                saveIn.erase(pos, 1); // Xoá từ vị trí '\0' trở đi
+                pos = saveIn.find('\0');
+            }
+            int retval = recoverFileFromMFTA(hVolume, get<6>(item[num]), saveIn);
+            DWORD bytesReturned;
+            if (retval) 
+                cout << "";
+            else
+            {
+                //DeviceIoControl(hVolume, FSCTL_UNLOCK_VOLUME, NULL, 0, NULL, 0, &bytesReturned, NULL);
+                cout << "Could not restore all data of the file!\n";
+            }
+
+            CloseHandle(hVolume);
+            Sleep(500);
+            hVolume = CreateFileA(
+                path,     
+                GENERIC_READ | GENERIC_WRITE , //| WRITE_DAC | WRITE_OWNER,   
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 
+                NULL, 
+                OPEN_EXISTING, 
+                FILE_FLAG_NO_BUFFERING, 
+                NULL
+            );
+            system("pause");
+            item.clear();
+            goto reset;
+        }   
+    }
+
+    unlockVolume(hVolume);
+    CloseHandle(hVolume);
+}
 
 int main()
 {
@@ -192,5 +334,7 @@ int main()
     bool isFAT32 = isFAT32Volume(volumeChar);
 
     if (isFAT32) doFAT(volumeChar);
+
+    if (isNTFS) doNTFS(volumeChar);
     return 0;
 }

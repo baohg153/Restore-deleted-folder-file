@@ -1,6 +1,6 @@
 #include "filehandle.h"
 
-int sS = 512, sC, sB, nF, sF, sD;
+int sS = 512, sC, sB, nF, sF, sD, sV;
 
 bool lockVolume(HANDLE hVolume)
 {
@@ -280,10 +280,9 @@ int restoreItem(HANDLE hVolume, ITEM item)
 
 //NTFS--------------------------------------------------------------
 int BUFFER_SIZE = 4096;
-const int SECTOR_SIZE = 512;             // Kích thước 1 sector (thường 512 bytes)
-const int MFT_RECORD_SIZE = 1024;          // Giả sử 1 MFT entry = 1024 bytes (2 sectors)
-const int CLUSTER_SIZE = 4096;             // Giả định cluster size = 4096 bytes
-const int MFT_ENTRY_SECTOR = 12345;  
+int SECTOR_SIZE = 512;             // Kích thước 1 sector (thường 512 bytes)
+int MFT_RECORD_SIZE = 1024;          // 1 MFT entry = 1024 bytes (2 sectors)
+int CLUSTER_SIZE = 4096;             // Cluster size = 4096 bytes
 
 bool isMFTEntry(const unsigned char* buffer) {
     // MFT entry phải bắt đầu với "FILE" (hex: 0x46 49 4C 45)
@@ -460,18 +459,18 @@ vector<pair<int,int>> parseDataRuns(const unsigned char* dataRun, int maxLen) {
         int absoluteCluster = prevCluster + relOffset;
 
         // Debug giá trị cluster
-        cout << "Run start cluster: " << absoluteCluster 
-             << ", Run length: " << clusterCount << endl;
+        // cout << "Run start cluster: " << absoluteCluster 
+        //      << ", Run length: " << clusterCount << endl;
 
         if (clusterCount <= 0 || absoluteCluster < 0) {
             cerr << "Invalid data run detected!" << endl;
             return {};
         }
-        cout << "Header: " << (int)header 
-        << ", lengthSize: " << (int)lengthSize 
-        << ", offsetSize: " << (int)offsetSize << endl;
-        cout << "Parsed Run - Start Cluster: " << absoluteCluster 
-        << ", Length: " << clusterCount << endl;
+        // cout << "Header: " << (int)header 
+        // << ", lengthSize: " << (int)lengthSize 
+        // << ", offsetSize: " << (int)offsetSize << endl;
+        // cout << "Parsed Run - Start Cluster: " << absoluteCluster 
+        // << ", Length: " << clusterCount << endl;
         runs.emplace_back(absoluteCluster, clusterCount);
         prevCluster = absoluteCluster;
     }
@@ -479,10 +478,10 @@ vector<pair<int,int>> parseDataRuns(const unsigned char* dataRun, int maxLen) {
     return runs;
 }
 
-bool recoverFileFromMFTA(HANDLE hVol, int mftEntrySector, const string& outputFile) {
+bool recoverFileFromMFTA(HANDLE hVol, int mftEntrySector,const string& outputFile) {
     unsigned char mftBuffer[MFT_RECORD_SIZE] = {0};
     readSectorNTFS(hVol, mftBuffer, mftEntrySector);
-
+    cout << outputFile << endl;
     uint16_t attrOffset = *(uint16_t*)(mftBuffer + 0x14);
     uint32_t entrySize = *(uint32_t*)(mftBuffer + 0x1C);
     bool foundData = false;
@@ -527,13 +526,13 @@ bool recoverFileFromMFTA(HANDLE hVol, int mftEntrySector, const string& outputFi
                 nonResident = true;
                 foundData = true;
                 
-                cout << "NonResidentAttrHeader Debug:" << endl;
-                cout << "Start VCN: " << nrHeader.startVCN << endl;
-                cout << "End VCN: " << nrHeader.endVCN << endl;
-                cout << "Data Run Offset: " << (int)nrHeader.dataRunOffset << endl;
-                cout << "Allocated Size: " << nrHeader.allocatedSize << endl;
+                // cout << "NonResidentAttrHeader Debug:" << endl;
+                // cout << "Start VCN: " << nrHeader.startVCN << endl;
+                // cout << "End VCN: " << nrHeader.endVCN << endl;
+                // cout << "Data Run Offset: " << (int)nrHeader.dataRunOffset << endl;
+                // cout << "Allocated Size: " << nrHeader.allocatedSize << endl;
                 cout << "Real Size: " << nrHeader.realSize << endl;
-                cout << "Initialized Size: " << nrHeader.initializedSize << endl;
+                // cout << "Initialized Size: " << nrHeader.initializedSize << endl;
                 
                 const unsigned char* dataRun = mftBuffer + offset + nrHeader.dataRunOffset;
                 vector<pair<int, int>> runs = parseDataRuns(dataRun, attrLen - nrHeader.dataRunOffset);
@@ -596,6 +595,7 @@ bool recoverFileFromMFTA(HANDLE hVol, int mftEntrySector, const string& outputFi
                 
                 outFile.close();
                 cout << "Bytes written: " << bytesWritten << " / " << fileSize << endl;
+                cout << "Recovered resident file successfully: " << outputFile << " (" << fileSize << " bytes)" << endl;
                 return true;
             }
         }
