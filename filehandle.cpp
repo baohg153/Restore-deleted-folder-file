@@ -102,8 +102,8 @@ void getCertainFolder(HANDLE hVolume, int recentSector, vector<ITEM> &folders, v
             break;
         get<0>(newItem) = {recentSector, entryIndex - 1};
         
-        if (get<2>(newItem)) folders.push_back(newItem);
-        else if (get<5>(newItem)) deletedFiles.push_back(newItem);
+        if (get<2>(newItem) && !get<5>(newItem)) folders.push_back(newItem);
+        else if (!get<2>(newItem) && get<5>(newItem)) deletedFiles.push_back(newItem);
     }
 }
 
@@ -132,7 +132,7 @@ int readEntry(HANDLE hVolume, unsigned char sector[], int recentSector, int line
                (buffer[offset + 30] << 16) | (buffer[offset + 31] << 24);
     
     // Folder or File?
-    bool isFolder = (buffer[offset + 0xB] & (1 << 4));
+    bool isFolder = buffer[offset + 0xB] & (1 << 4);
     
     // Is Deleted?
     bool isDeleted = (buffer[offset] == 0xE5);
@@ -191,11 +191,60 @@ int restoreItem(HANDLE hVolume, ITEM item)
     int sectorIndex = get<0>(item).first, offset = get<0>(item).second * 32;
     int cluster = get<4>(item), size = get<3>(item);
 
+    //Restore cluster
+    unsigned char FAT[sS];
+    int fatSector = sB + cluster / 128;
+    readSector(hVolume, FAT, fatSector);
+    int nCluster = (size - 1)/(sC * sS) + 1, retval = 0, restoredCluster = 0;
+
+    //check if the first cluster is written
+    if (getIntValue(FAT, 4*(cluster % 128), 4) != 0) retval = -2;
+    else
+    {
+        for (int i = 0; i < nCluster; i++)
+        {
+            int curCluster = cluster + i;
+            int offset = 4 * (curCluster % 128);
+            if (getIntValue(FAT, offset, 4) == 0)
+            {
+                restoredCluster++;
+                int fatValue = (i == nCluster - 1) ? 0x0FFFFFFF : curCluster + 1;
+                FAT[offset] = fatValue & 0xFF;        
+                FAT[offset + 1] = (fatValue >> 8) & 0xFF;
+                FAT[offset + 2] = (fatValue>> 16) & 0xFF;
+                FAT[offset + 3] = (fatValue >> 24) & 0xFF; 
+
+                //What if clusters are in two different sectors?
+                if ((curCluster + 1) % 128 == 0)
+                {
+                    writeSector(hVolume, FAT, fatSector);
+                    writeSector(hVolume, FAT, fatSector + sF);
+                    readSector(hVolume, FAT, ++fatSector);
+                }
+            }
+            else
+            {
+                retval = -1;
+                break;
+            }
+        }
+
+        writeSector(hVolume, FAT, fatSector);
+        writeSector(hVolume, FAT, fatSector + sF);
+    }
+
     //Read sector
     unsigned char sector[sS];
     readSector(hVolume, sector, sectorIndex);
 
     //Change byte E5
+    if (retval == -2)
+    {
+        sector[offset + 0xB] = (1 << 4);
+        writeSector(hVolume, sector, sectorIndex);
+        return retval;
+    }
+    
     sector[offset] = 'A';
     int loffset = offset - 32, count = 0;
     while (loffset >= 0 && sector[loffset + 0xB] == 0x0F)
@@ -236,44 +285,6 @@ int restoreItem(HANDLE hVolume, ITEM item)
     }
     writeSector(hVolume, sector, sectorIndex);
     if (exCount > 0) writeSector(hVolume, exSector, sectorIndex - 1);
-
-    //Restore cluster
-    unsigned char FAT[sS];
-    int fatSector = sB + cluster / 128;
-    readSector(hVolume, FAT, fatSector);
-    int nCluster = (size - 1)/(sC * sS) + 1, retval = 0, restoredCluster = 0;
-    for (int i = 0; i < nCluster; i++)
-    {
-        int curCluster = cluster + i;
-        int offset = 4 * (curCluster % 128);
-        if (getIntValue(FAT, offset, 4) == 0)
-        {
-            restoredCluster++;
-            int fatValue = (i == nCluster - 1) ? 0x0FFFFFFF : curCluster + 1;
-            FAT[offset] = fatValue & 0xFF;        
-            FAT[offset + 1] = (fatValue >> 8) & 0xFF;
-            FAT[offset + 2] = (fatValue>> 16) & 0xFF;
-            FAT[offset + 3] = (fatValue >> 24) & 0xFF; 
-
-            //What if clusters are in two different sectors?
-            if ((curCluster + 1) % 128 == 0)
-            {
-                writeSector(hVolume, FAT, fatSector);
-                writeSector(hVolume, FAT, fatSector + sF);
-                readSector(hVolume, FAT, ++fatSector);
-            }
-        }
-        else
-        {
-            retval = -1;
-            break;
-        }
-    }
-
-    writeSector(hVolume, FAT, fatSector);
-    writeSector(hVolume, FAT, fatSector + sF);
-
-    // resetVolume(hVolume, "\\\\.\\F:");
 
     return retval;
 }
@@ -343,13 +354,19 @@ ITEM_NTFS parseMFTEntry(const unsigned char* buffer, int MFTstart) {
 
         // Lấy header của thuộc tính resident (có kích thước cố định)
         ResidentAttrHeader rHeader;
-        memcpy(&rHeader, buffer + offset, sizeof(ResidentAttrHeader));
+        //memcpy(&rHeader, buffer + offset, sizeof(ResidentAttrHeader));
+        rHeader.type         = *(uint32_t*)(buffer + offset);
+        rHeader.length       = *(uint32_t*)(buffer + offset + 0x04);
+        rHeader.nameLength   = *(uint8_t*)(buffer + offset + 0x09);
+        rHeader.valueLength  = *(uint32_t*)(buffer + offset + 0x10);
+        rHeader.valueOffset  = *(uint16_t*)(buffer + offset + 0x14);
+
         if (rHeader.length == 0)
             break; // Ngăn vòng lặp vô hạn
 
         if (attrType == 0x10) { // $STANDARD_INFORMATION
             const unsigned char* valuePtr = buffer + offset + rHeader.valueOffset;
-            uint32_t stdAttributes = *(uint32_t*)(valuePtr + 0x20);
+            uint32_t stdAttributes = *(uint32_t*)(valuePtr + 0x20); //<----- Error
             isHidden = (stdAttributes & 0x02) != 0;
         }
         else if (attrType == 0x30) { // $FILE_NAME
@@ -409,7 +426,7 @@ ITEM_NTFS parseMFTEntry(const unsigned char* buffer, int MFTstart) {
     }
 
     return make_tuple(fileName, isFolder, fileSize, startCluster, isDeleted, isHidden, MFTstart);
-}
+}  
 
 vector<pair<int,int>> parseDataRuns(const unsigned char* dataRun, int maxLen) {
     vector<pair<int,int>> runs;

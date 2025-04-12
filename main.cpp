@@ -57,6 +57,15 @@ bool isFAT32Volume(char driveLetter)
     return 1;
 }
 
+//convert from string to wstring (for Vietnamese name)
+std::wstring stringToWstring(const std::string& str)
+{
+    int size_needed = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, nullptr, 0);
+    std::wstring wstr(size_needed - 1, 0); // -1 vì không cần ký tự null
+    MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, &wstr[0], size_needed);
+    return wstr;
+}
+
 void doFAT(char volumeChar) 
 {
     char path[7] = "\\\\.\\"; path[4] = volumeChar; path[5] = ':'; path[6] = '\0';
@@ -104,10 +113,10 @@ void doFAT(char volumeChar)
         //print folders and deleted files
         cout << "\033[1;33mFOLDERS:\033[0m \n0>..\n";
         for (int i = 1; i< folders.size(); i++)
-            cout << i << "> " << get<1>(folders[i]) << "\n";
+            wcout << i << "> " << stringToWstring(get<1>(folders[i])) << "\n";
         cout << "\n\033[1;33mDELETED FILES:\033[0m\n";
         for (int i = 0; i < deletedFiles.size(); i++)
-            cout << i << "> " << get<1>(deletedFiles[i]) << "\n";
+            wcout << i << "> " << stringToWstring(get<1>(deletedFiles[i])) << "\n";
         cout << "\n \033[0;32m Commands: \"cd [num]\" or \"restore [num]\" or \"quit\" or \"reset\" \n> \033[0m";
 
         //Type in command
@@ -161,8 +170,9 @@ void doFAT(char volumeChar)
             cin >> num;
             if (!(num >= 0 && num <= deletedFiles.size() && !deletedFiles.empty())) continue;
 
-            int retval = restoreItem(hVolume, deletedFiles[num]);
-            if (retval == -1) cout << "Could not restore all data of the file!\n";
+            int retval = restoreItem(hVolume, deletedFiles[num]);\
+            if (retval == -2) cout << "Could not restore file because the first cluster has been overwritten!\n";
+            else if (retval == -1) cout << "Could not restore all data of the file!\n";
             else if (retval == 0) cout << "Restored successfully!\n";
 
             CloseHandle(hVolume);
@@ -204,7 +214,7 @@ void doNTFS(char volumeChar){
         return;
     }
 
-    lockVolume(hVolume);
+    // lockVolume(hVolume);
     unsigned char VolumeSector[BUFFER_SIZE];
     readSectorNTFS(hVolume, VolumeSector, 0);
     sS = getIntValue(VolumeSector, 0xB, 2); // Kích thước của một sector
@@ -223,28 +233,36 @@ void doNTFS(char volumeChar){
 
     //BUFFER_SIZE = sS;
     cout << sS << " " << sC << " " << sV << " " << MFTstart << " " << MFTRecordSize << " " << MFTMirrorStart << endl;
-    unsigned char MFTEntryBuffer[MFTRecordSize];
+    unsigned char MFTEntryBuffer[CLUSTER_SIZE];
     vector<ITEM_NTFS> item;
 
     reset:
     int tracker = MFTstart - MFTMirrorStart;
     int step = 0;
     int count = 0; //Count to stop
-    while(tracker){
+    while(tracker > 0){
+        // cout << count;
         readSectorNTFS(hVolume, MFTEntryBuffer, MFTstart + step);
         if(!isMFTEntry(MFTEntryBuffer)){
+            cout << '|';
             count++;
         }
         else
             count = 0;
-        if(count > 5)
+        if(count > 10)
             break;
+        // cout << 1;
+        
+        cout << tracker << " | " << MFTEntryBuffer << ", " << MFTstart << ", " << step << "\n";
         ITEM_NTFS result = parseMFTEntry(MFTEntryBuffer, MFTstart + step);
+        // cout << 4 << " ";
         if(get<5>(result) == 0 & get<0>(result) != "Unknown" & get<4>(result)){
             item.push_back(result);
         }
         step += 2;
         tracker -= 2;
+        // cout << 3 << " ";
+        cout << "\n";
     }
 
     string currentPath(1, volumeChar); currentPath = currentPath + ":/"; 
@@ -321,9 +339,10 @@ void doNTFS(char volumeChar){
         }   
     }
 
-    unlockVolume(hVolume);
+    // unlockVolume(hVolume);
     CloseHandle(hVolume);
 }
+
 
 int main()
 {
@@ -334,7 +353,7 @@ int main()
     bool isFAT32 = isFAT32Volume(volumeChar);
 
     if (isFAT32) doFAT(volumeChar);
-
     if (isNTFS) doNTFS(volumeChar);
+
     return 0;
 }
