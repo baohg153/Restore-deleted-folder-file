@@ -223,21 +223,21 @@ void doNTFS(char volumeChar){
 
     //BUFFER_SIZE = sS;
     cout << sS << " " << sC << " " << sV << " " << MFTstart << " " << MFTRecordSize << " " << MFTMirrorStart << endl;
-    unsigned char MFTEntryBuffer[MFTRecordSize];
+    unsigned char MFTEntryBuffer[CLUSTER_SIZE];
     vector<ITEM_NTFS> item;
 
     reset:
-    int tracker = MFTstart - MFTMirrorStart;
-    int step = 0;
-    int count = 0; //Count to stop
-    while(tracker){
+    unsigned long long tracker = MFTstart - MFTMirrorStart;
+    unsigned long long step = 0;
+    unsigned long long count = 0; //Count to stop
+    while(tracker > 0){
         readSectorNTFS(hVolume, MFTEntryBuffer, MFTstart + step);
         if(!isMFTEntry(MFTEntryBuffer)){
             count++;
         }
         else
             count = 0;
-        if(count > 5)
+        if(count > 10)
             break;
         ITEM_NTFS result = parseMFTEntry(MFTEntryBuffer, MFTstart + step);
         if(get<5>(result) == 0 & get<0>(result) != "Unknown" & get<4>(result)){
@@ -245,6 +245,7 @@ void doNTFS(char volumeChar){
         }
         step += 2;
         tracker -= 2;
+        cout << tracker << endl;
     }
 
     string currentPath(1, volumeChar); currentPath = currentPath + ":/"; 
@@ -254,7 +255,7 @@ void doNTFS(char volumeChar){
         std::cout << "\033[1;34mPATH: \033[34m" << currentPath << "\033[0m\n-------------------------------------------------------\n";
         //print deleted files
         cout << "\n\033[1;33mDELETED FILES:\033[0m\n";
-        for (int i = 0; i < item.size(); i++)
+        for (unsigned long long i = 0; i < item.size(); i++)
             cout << i << "> " << get<0>(item[i]) << " - Size: " << get<2>(item[i]) << "\n";
         cout << "\n \033[0;32m Commands: \"restore [num]\" or \"quit\" or \"reset\" \n> \033[0m";
 
@@ -289,11 +290,15 @@ void doNTFS(char volumeChar){
             // cin >> drive; 
             string saveIn = "";
             saveIn = string(1, volumeChar) + ":\\" + get<0>(item[num]);
+
             size_t pos = saveIn.find('\0');
             while (pos != std::string::npos) {
                 saveIn.erase(pos, 1); // Xoá từ vị trí '\0' trở đi
                 pos = saveIn.find('\0');
             }
+            
+            replace(saveIn.begin(), saveIn.end(), ' ', '_');
+
             int retval = recoverFileFromMFTA(hVolume, get<6>(item[num]), saveIn);
             DWORD bytesReturned;
             if (retval) 

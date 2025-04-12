@@ -343,7 +343,13 @@ ITEM_NTFS parseMFTEntry(const unsigned char* buffer, int MFTstart) {
 
         // Lấy header của thuộc tính resident (có kích thước cố định)
         ResidentAttrHeader rHeader;
-        memcpy(&rHeader, buffer + offset, sizeof(ResidentAttrHeader));
+        //memcpy(&rHeader, buffer + offset, sizeof(ResidentAttrHeader));
+        rHeader.type         = *(uint32_t*)(buffer + offset);
+        rHeader.length       = *(uint32_t*)(buffer + offset + 0x04);
+        rHeader.nameLength   = *(uint8_t*)(buffer + offset + 0x09);
+        rHeader.valueLength  = *(uint32_t*)(buffer + offset + 0x10);
+        rHeader.valueOffset  = *(uint16_t*)(buffer + offset + 0x14);
+
         if (rHeader.length == 0)
             break; // Ngăn vòng lặp vô hạn
 
@@ -407,7 +413,6 @@ ITEM_NTFS parseMFTEntry(const unsigned char* buffer, int MFTstart) {
 
         offset += rHeader.length;
     }
-
     return make_tuple(fileName, isFolder, fileSize, startCluster, isDeleted, isHidden, MFTstart);
 }
 
@@ -481,7 +486,6 @@ vector<pair<int,int>> parseDataRuns(const unsigned char* dataRun, int maxLen) {
 bool recoverFileFromMFTA(HANDLE hVol, int mftEntrySector,const string& outputFile) {
     unsigned char mftBuffer[MFT_RECORD_SIZE] = {0};
     readSectorNTFS(hVol, mftBuffer, mftEntrySector);
-    cout << outputFile << endl;
     uint16_t attrOffset = *(uint16_t*)(mftBuffer + 0x14);
     uint32_t entrySize = *(uint32_t*)(mftBuffer + 0x1C);
     bool foundData = false;
@@ -595,7 +599,7 @@ bool recoverFileFromMFTA(HANDLE hVol, int mftEntrySector,const string& outputFil
                 
                 outFile.close();
                 cout << "Bytes written: " << bytesWritten << " / " << fileSize << endl;
-                cout << "Recovered resident file successfully: " << outputFile << " (" << fileSize << " bytes)" << endl;
+                cout << "Recovered non-resident file successfully: " << outputFile << " (" << fileSize << " bytes)" << endl;
                 return true;
             }
         }
